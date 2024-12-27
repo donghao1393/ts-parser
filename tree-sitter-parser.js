@@ -71,16 +71,68 @@ class TreeSitterParser {
     // 处理函数调用节点
     processCallExpression(node, currentScope) {
         let calleeName = '';
-        const calleeNode = node.children.find(child => child.type === 'identifier');
-
-        if (calleeNode) {
-            calleeName = calleeNode.text;
-            if (this.functions.has(calleeName)) {
+        
+        // 普通函数调用
+        if (node.childCount >= 1) {
+            const calleeNode = node.children[0];
+            if (calleeNode.type === 'identifier') {
+                calleeName = calleeNode.text;
+            } else if (calleeNode.type === 'member_expression') {
+                calleeName = this.getMemberExpressionName(calleeNode);
+            }
+            
+            if (calleeName && (this.functions.has(calleeName) || this.imports.has(calleeName))) {
                 this.addRelation(
                     currentScope,
                     calleeName,
-                    `${calleeNode.startPosition.row + 1}:${calleeNode.startPosition.column}`
+                    `${node.startPosition.row + 1}:${node.startPosition.column}`
                 );
+            }
+        }
+    }
+
+    // 获取成员表达式的完整名称
+    getMemberExpressionName(node) {
+        const parts = [];
+        let current = node;
+        
+        while (current) {
+            if (current.type === 'identifier') {
+                parts.unshift(current.text);
+                break;
+            } else if (current.type === 'member_expression') {
+                const property = current.children.find(c => c.type === 'property_identifier');
+                if (property) {
+                    parts.unshift(property.text);
+                }
+                current = current.children.find(c => c.type === 'identifier' || c.type === 'member_expression');
+            } else {
+                break;
+            }
+        }
+        
+        return parts.join('.');
+    }
+
+    // 处理JSX元素
+    processJSXElement(node, currentScope) {
+        const openingElement = node.children.find(child => 
+            child.type === 'jsx_opening_element' || 
+            child.type === 'jsx_self_closing_element'
+        );
+        
+        if (openingElement) {
+            const tagIdentifier = openingElement.children.find(child => child.type === 'identifier');
+            if (tagIdentifier) {
+                const componentName = tagIdentifier.text;
+                // 只处理大写开头的组件（React约定）
+                if (/^[A-Z]/.test(componentName)) {
+                    this.addRelation(
+                        currentScope,
+                        componentName,
+                        `${node.startPosition.row + 1}:${node.startPosition.column}`
+                    );
+                }
             }
         }
     }
@@ -92,7 +144,7 @@ class TreeSitterParser {
                 child.type === 'identifier' || 
                 (child.type === 'import_clause' && child.children.some(c => c.type === 'identifier'))
             );
-
+            
             const namedImports = node.children.find(child => 
                 child.type === 'named_imports' || 
                 child.type === 'import_clause'
@@ -122,11 +174,11 @@ class TreeSitterParser {
 
         // 处理导入
         this.processImports(node);
-
+        
         if (node.type === 'program') {
             console.log('Processing program node with children:', node.children.length);
         }
-
+        
         console.log('Processing node type:', node.type);
         switch (node.type) {
             case 'class_declaration':
@@ -159,6 +211,11 @@ class TreeSitterParser {
             case 'call_expression':
                 this.processCallExpression(node, currentScope);
                 break;
+                
+            case 'jsx_element':
+            case 'jsx_self_closing_element':
+                this.processJSXElement(node, currentScope);
+                break;
         }
 
         // 递归处理子节点
@@ -173,23 +230,23 @@ class TreeSitterParser {
             console.log('Starting parse for file:', filePath);
             const content = fs.readFileSync(filePath, 'utf8');
             console.log('File content length:', content.length);
-
+            
             const ext = filePath.split('.').pop().toLowerCase();
             console.log('File extension:', ext);
-
+            
             const parser = this.parsers[ext];
             if (!parser) {
                 console.error(`No parser available for extension: ${ext}`);
                 return '[]';
             }
-
+            
             this.parser.setLanguage(parser);
             console.log('Parser set for extension:', ext);
-
+            
             const tree = this.parser.parse(content);
             console.log('AST Root node type:', tree.rootNode.type);
             console.log('AST Root node child count:', tree.rootNode.children.length);
-
+            
             // 第一遍遍历收集所有函数声明
             this.traverseTree(tree.rootNode);
 
