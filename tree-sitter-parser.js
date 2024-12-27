@@ -68,29 +68,6 @@ class TreeSitterParser {
         return parentClass ? `${parentClass}.${name}` : name;
     }
 
-    // 处理函数调用节点
-    processCallExpression(node, currentScope) {
-        let calleeName = '';
-        
-        // 普通函数调用
-        if (node.childCount >= 1) {
-            const calleeNode = node.children[0];
-            if (calleeNode.type === 'identifier') {
-                calleeName = calleeNode.text;
-            } else if (calleeNode.type === 'member_expression') {
-                calleeName = this.getMemberExpressionName(calleeNode);
-            }
-            
-            if (calleeName && (this.functions.has(calleeName) || this.imports.has(calleeName))) {
-                this.addRelation(
-                    currentScope,
-                    calleeName,
-                    `${node.startPosition.row + 1}:${node.startPosition.column}`
-                );
-            }
-        }
-    }
-
     // 获取成员表达式的完整名称
     getMemberExpressionName(node) {
         const parts = [];
@@ -112,29 +89,6 @@ class TreeSitterParser {
         }
         
         return parts.join('.');
-    }
-
-    // 处理JSX元素
-    processJSXElement(node, currentScope) {
-        const openingElement = node.children.find(child => 
-            child.type === 'jsx_opening_element' || 
-            child.type === 'jsx_self_closing_element'
-        );
-        
-        if (openingElement) {
-            const tagIdentifier = openingElement.children.find(child => child.type === 'identifier');
-            if (tagIdentifier) {
-                const componentName = tagIdentifier.text;
-                // 只处理大写开头的组件（React约定）
-                if (/^[A-Z]/.test(componentName)) {
-                    this.addRelation(
-                        currentScope,
-                        componentName,
-                        `${node.startPosition.row + 1}:${node.startPosition.column}`
-                    );
-                }
-            }
-        }
     }
 
     // 处理导入语句
@@ -168,6 +122,136 @@ class TreeSitterParser {
         }
     }
 
+    // 处理变量声明
+    processVariableDeclaration(node, currentScope) {
+        const declarator = node.children.find(child => child.type === 'variable_declarator');
+        if (declarator) {
+            // 获取变量名
+            const identifier = declarator.children.find(child => child.type === 'identifier');
+            const value = declarator.children.find(child => 
+                child.type === 'call_expression' || 
+                child.type === 'member_expression'
+            );
+
+            if (identifier && value) {
+                const varName = identifier.text;
+                
+                // 记录函数定义
+                if (value.type === 'call_expression') {
+                    // 处理函数调用
+                    const callee = value.children[0];
+                    if (callee.type === 'identifier') {
+                        const calleeName = callee.text;
+                        this.addRelation(
+                            currentScope,
+                            calleeName,
+                            `${node.startPosition.row + 1}:${node.startPosition.column}`
+                        );
+                    }
+                }
+
+                // 将变量添加到函数映射中，以便后续追踪使用
+                this.functions.set(varName, {
+                    type: 'variable',
+                    location: node.startPosition.row + 1,
+                    calls: new Set()
+                });
+            }
+        }
+    }
+
+    // 处理函数调用节点
+    processCallExpression(node, currentScope) {
+        let calleeName = '';
+        
+        // 普通函数调用
+        if (node.childCount >= 1) {
+            const calleeNode = node.children[0];
+            if (calleeNode.type === 'identifier') {
+                calleeName = calleeNode.text;
+            } else if (calleeNode.type === 'member_expression') {
+                calleeName = this.getMemberExpressionName(calleeNode);
+            }
+            
+            if (calleeName && (this.functions.has(calleeName) || this.imports.has(calleeName))) {
+                this.addRelation(
+                    currentScope,
+                    calleeName,
+                    `${node.startPosition.row + 1}:${node.startPosition.column}`
+                );
+            }
+        }
+    }
+
+    // 处理JSX元素
+    processJSXElement(node, currentScope) {
+        const elements = [];
+        
+        // 处理开标签或自闭合标签
+        const openingElement = node.children.find(child => 
+            child.type === 'jsx_opening_element' || 
+            child.type === 'jsx_self_closing_element'
+        );
+        
+        if (openingElement) {
+            elements.push(openingElement);
+        }
+
+        // 处理所有子JSX元素
+        node.children.forEach(child => {
+            if (child.type === 'jsx_element' || child.type === 'jsx_self_closing_element') {
+                elements.push(child);
+            }
+        });
+
+        // 处理所有找到的元素
+        elements.forEach(element => {
+            const tagIdentifier = element.children.find(child => child.type === 'identifier');
+            if (tagIdentifier) {
+                const componentName = tagIdentifier.text;
+                // 只处理自定义组件（大写开头）
+                if (/^[A-Z]/.test(componentName)) {
+                    // 检查是否是导入的组件或本地定义的组件
+                    if (this.imports.has(componentName) || this.functions.has(componentName)) {
+                        this.addRelation(
+                            currentScope,
+                            componentName,
+                            `${element.startPosition.row + 1}:${element.startPosition.column}`
+                        );
+                    }
+                }
+            }
+
+            // 处理JSX属性中的表达式
+            const attributes = element.children.filter(child => child.type === 'jsx_attribute');
+            attributes.forEach(attr => {
+                const expression = attr.children.find(child => child.type === 'jsx_expression');
+                if (expression) {
+                    const jsxContent = expression.children.find(child => 
+                        child.type === 'identifier' || 
+                        child.type === 'call_expression' ||
+                        child.type === 'member_expression'
+                    );
+                    
+                    if (jsxContent) {
+                        if (jsxContent.type === 'call_expression') {
+                            this.processCallExpression(jsxContent, currentScope);
+                        } else if (jsxContent.type === 'identifier') {
+                            const name = jsxContent.text;
+                            if (this.functions.has(name) || this.imports.has(name)) {
+                                this.addRelation(
+                                    currentScope,
+                                    name,
+                                    `${jsxContent.startPosition.row + 1}:${jsxContent.startPosition.column}`
+                                );
+                            }
+                        }
+                    }
+                }
+            });
+        });
+    }
+
     // 遍历语法树
     traverseTree(node, parentClass = null, currentScope = 'global') {
         if (!node) return;
@@ -180,6 +264,7 @@ class TreeSitterParser {
         }
         
         console.log('Processing node type:', node.type);
+
         switch (node.type) {
             case 'class_declaration':
                 const className = this.getFullName(node);
@@ -211,10 +296,15 @@ class TreeSitterParser {
             case 'call_expression':
                 this.processCallExpression(node, currentScope);
                 break;
-                
+
             case 'jsx_element':
             case 'jsx_self_closing_element':
                 this.processJSXElement(node, currentScope);
+                break;
+
+            case 'lexical_declaration':
+            case 'variable_declaration':
+                this.processVariableDeclaration(node, currentScope);
                 break;
         }
 
@@ -246,7 +336,7 @@ class TreeSitterParser {
             const tree = this.parser.parse(content);
             console.log('AST Root node type:', tree.rootNode.type);
             console.log('AST Root node child count:', tree.rootNode.children.length);
-            
+
             // 第一遍遍历收集所有函数声明
             this.traverseTree(tree.rootNode);
 
@@ -267,6 +357,7 @@ class TreeSitterParser {
 
             console.log('\nFormatted results:', results);
             return JSON.stringify(results);
+
         } catch (error) {
             console.error(`Error processing ${filePath}: ${error.message}`);
             return '[]';
