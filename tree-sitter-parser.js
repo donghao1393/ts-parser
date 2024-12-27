@@ -183,6 +183,27 @@ class TreeSitterParser {
         }
     }
 
+    // 处理JSX属性中的组件引用
+    processJSXAttributes(element, currentScope) {
+        element.children
+            .filter(child => child.type === 'jsx_attribute')
+            .forEach(attr => {
+                const name = attr.children.find(c => c.type === 'property_identifier')?.text;
+                if (name === 'element') {  // 特别处理Route的element属性
+                    const expression = attr.children.find(c => c.type === 'jsx_expression');
+                    if (expression) {
+                        const componentRef = expression.children.find(c => 
+                            c.type === 'jsx_element' || 
+                            c.type === 'jsx_self_closing_element'
+                        );
+                        if (componentRef) {
+                            this.processJSXElement(componentRef, currentScope);
+                        }
+                    }
+                }
+            });
+    }
+
     // 处理JSX元素
     processJSXElement(node, currentScope) {
         const elements = [];
@@ -194,62 +215,27 @@ class TreeSitterParser {
         );
         
         if (openingElement) {
-            elements.push(openingElement);
+            // 识别JSX组件
+            const tagIdentifier = openingElement.children.find(child => child.type === 'identifier');
+            if (tagIdentifier && /^[A-Z]/.test(tagIdentifier.text)) {
+                const componentName = tagIdentifier.text;
+                if (this.imports.has(componentName) || this.functions.has(componentName)) {
+                    this.addRelation(
+                        currentScope,
+                        componentName,
+                        `${openingElement.startPosition.row + 1}:${openingElement.startPosition.column}`
+                    );
+                }
+                
+                // 处理属性中的组件引用
+                this.processJSXAttributes(openingElement, currentScope);
+            }
         }
 
-        // 处理所有子JSX元素
-        node.children.forEach(child => {
-            if (child.type === 'jsx_element' || child.type === 'jsx_self_closing_element') {
-                elements.push(child);
-            }
-        });
-
-        // 处理所有找到的元素
-        elements.forEach(element => {
-            const tagIdentifier = element.children.find(child => child.type === 'identifier');
-            if (tagIdentifier) {
-                const componentName = tagIdentifier.text;
-                // 只处理自定义组件（大写开头）
-                if (/^[A-Z]/.test(componentName)) {
-                    // 检查是否是导入的组件或本地定义的组件
-                    if (this.imports.has(componentName) || this.functions.has(componentName)) {
-                        this.addRelation(
-                            currentScope,
-                            componentName,
-                            `${element.startPosition.row + 1}:${element.startPosition.column}`
-                        );
-                    }
-                }
-            }
-
-            // 处理JSX属性中的表达式
-            const attributes = element.children.filter(child => child.type === 'jsx_attribute');
-            attributes.forEach(attr => {
-                const expression = attr.children.find(child => child.type === 'jsx_expression');
-                if (expression) {
-                    const jsxContent = expression.children.find(child => 
-                        child.type === 'identifier' || 
-                        child.type === 'call_expression' ||
-                        child.type === 'member_expression'
-                    );
-                    
-                    if (jsxContent) {
-                        if (jsxContent.type === 'call_expression') {
-                            this.processCallExpression(jsxContent, currentScope);
-                        } else if (jsxContent.type === 'identifier') {
-                            const name = jsxContent.text;
-                            if (this.functions.has(name) || this.imports.has(name)) {
-                                this.addRelation(
-                                    currentScope,
-                                    name,
-                                    `${jsxContent.startPosition.row + 1}:${jsxContent.startPosition.column}`
-                                );
-                            }
-                        }
-                    }
-                }
-            });
-        });
+        // 递归处理子JSX元素
+        node.children
+            .filter(child => child.type === 'jsx_element' || child.type === 'jsx_self_closing_element')
+            .forEach(child => this.processJSXElement(child, currentScope));
     }
 
     // 遍历语法树
@@ -258,12 +244,6 @@ class TreeSitterParser {
 
         // 处理导入
         this.processImports(node);
-        
-        if (node.type === 'program') {
-            console.log('Processing program node with children:', node.children.length);
-        }
-        
-        console.log('Processing node type:', node.type);
 
         switch (node.type) {
             case 'class_declaration':
@@ -275,13 +255,10 @@ class TreeSitterParser {
             case 'function_declaration':
             case 'generator_function_declaration':
             case 'method_definition':
-                console.log('Found function node:', node.type);
                 const funcName = this.getFullName(node, parentClass);
-                console.log('Extracted function name:', funcName);
                 if (funcName) {
                     this.addFunction(funcName, node.startPosition.row + 1);
                     currentScope = funcName;
-                    console.log('Added function:', funcName);
                 }
                 break;
 
@@ -317,12 +294,11 @@ class TreeSitterParser {
     // 解析文件
     parse(filePath) {
         try {
-            console.log('Starting parse for file:', filePath);
             const content = fs.readFileSync(filePath, 'utf8');
-            console.log('File content length:', content.length);
-            
             const ext = filePath.split('.').pop().toLowerCase();
-            console.log('File extension:', ext);
+            
+            // 只保留重要日志
+            console.log(`Parsing ${filePath} (${ext})`);
             
             const parser = this.parsers[ext];
             if (!parser) {
@@ -331,20 +307,18 @@ class TreeSitterParser {
             }
             
             this.parser.setLanguage(parser);
-            console.log('Parser set for extension:', ext);
-            
             const tree = this.parser.parse(content);
-            console.log('AST Root node type:', tree.rootNode.type);
-            console.log('AST Root node child count:', tree.rootNode.children.length);
 
             // 第一遍遍历收集所有函数声明
             this.traverseTree(tree.rootNode);
 
-            // Debug: 打印收集到的信息
-            console.log('\nCollected information:');
-            console.log('Functions:', Array.from(this.functions.entries()));
-            console.log('Relations:', Array.from(this.relations.entries()));
-            console.log('Imports:', Array.from(this.imports.entries()));
+            // 收集的信息
+            const summary = {
+                functions: Array.from(this.functions.entries()).length,
+                relations: this.relations.size,
+                imports: this.imports.size
+            };
+            console.log('Summary:', summary);
 
             // 结果格式化
             const results = Array.from(this.relations.entries()).map(([key, location]) => {
@@ -355,7 +329,6 @@ class TreeSitterParser {
                 ];
             });
 
-            console.log('\nFormatted results:', results);
             return JSON.stringify(results);
 
         } catch (error) {
