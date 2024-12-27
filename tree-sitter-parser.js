@@ -1,13 +1,22 @@
 const Parser = require('tree-sitter');
 const JavaScript = require('tree-sitter-javascript');
+const TypeScript = require('tree-sitter-typescript/typescript');
+const TSX = require('tree-sitter-typescript/tsx');
 const fs = require('fs');
 
 class TreeSitterParser {
     constructor() {
         this.parser = new Parser();
-        this.parser.setLanguage(JavaScript);
+        // 根据文件扩展名选择解析器
+        this.parsers = {
+            js: JavaScript,
+            jsx: JavaScript,
+            ts: TypeScript,
+            tsx: TSX
+        };
         this.functions = new Map();
         this.relations = new Map();
+        this.imports = new Map();
     }
 
     // 处理Mermaid语法的特殊字符
@@ -63,7 +72,7 @@ class TreeSitterParser {
     processCallExpression(node, currentScope) {
         let calleeName = '';
         const calleeNode = node.children.find(child => child.type === 'identifier');
-        
+
         if (calleeNode) {
             calleeName = calleeNode.text;
             if (this.functions.has(calleeName)) {
@@ -76,9 +85,43 @@ class TreeSitterParser {
         }
     }
 
+    // 处理导入语句
+    processImports(node) {
+        if (node.type === 'import_statement' || node.type === 'import_declaration') {
+            const defaultImport = node.children.find(child => 
+                child.type === 'identifier' || 
+                (child.type === 'import_clause' && child.children.some(c => c.type === 'identifier'))
+            );
+
+            const namedImports = node.children.find(child => 
+                child.type === 'named_imports' || 
+                child.type === 'import_clause'
+            );
+
+            if (defaultImport) {
+                const name = defaultImport.type === 'identifier' ? 
+                    defaultImport.text : 
+                    defaultImport.children.find(c => c.type === 'identifier').text;
+                this.imports.set(name, `import:${name}`);
+            }
+
+            if (namedImports) {
+                namedImports.children
+                    .filter(child => child.type === 'import_specifier')
+                    .forEach(specifier => {
+                        const name = specifier.children.find(c => c.type === 'identifier').text;
+                        this.imports.set(name, `import:${name}`);
+                    });
+            }
+        }
+    }
+
     // 遍历语法树
     traverseTree(node, parentClass = null, currentScope = 'global') {
         if (!node) return;
+
+        // 处理导入
+        this.processImports(node);
 
         switch (node.type) {
             case 'class_declaration':
@@ -120,8 +163,17 @@ class TreeSitterParser {
     parse(filePath) {
         try {
             const content = fs.readFileSync(filePath, 'utf8');
+            const ext = filePath.split('.').pop().toLowerCase();
+            const parser = this.parsers[ext];
+
+            if (!parser) {
+                console.error(`No parser available for extension: ${ext}`);
+                return '[]';
+            }
+
+            this.parser.setLanguage(parser);
             const tree = this.parser.parse(content);
-            
+
             // 第一遍遍历收集所有函数声明
             this.traverseTree(tree.rootNode);
 
