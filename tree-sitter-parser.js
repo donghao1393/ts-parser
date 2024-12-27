@@ -123,6 +123,11 @@ class TreeSitterParser {
         // 处理导入
         this.processImports(node);
 
+        if (node.type === 'program') {
+            console.log('Processing program node with children:', node.children.length);
+        }
+
+        console.log('Processing node type:', node.type);
         switch (node.type) {
             case 'class_declaration':
                 const className = this.getFullName(node);
@@ -133,10 +138,13 @@ class TreeSitterParser {
             case 'function_declaration':
             case 'generator_function_declaration':
             case 'method_definition':
+                console.log('Found function node:', node.type);
                 const funcName = this.getFullName(node, parentClass);
+                console.log('Extracted function name:', funcName);
                 if (funcName) {
                     this.addFunction(funcName, node.startPosition.row + 1);
                     currentScope = funcName;
+                    console.log('Added function:', funcName);
                 }
                 break;
 
@@ -162,20 +170,34 @@ class TreeSitterParser {
     // 解析文件
     parse(filePath) {
         try {
+            console.log('Starting parse for file:', filePath);
             const content = fs.readFileSync(filePath, 'utf8');
-            const ext = filePath.split('.').pop().toLowerCase();
-            const parser = this.parsers[ext];
+            console.log('File content length:', content.length);
 
+            const ext = filePath.split('.').pop().toLowerCase();
+            console.log('File extension:', ext);
+
+            const parser = this.parsers[ext];
             if (!parser) {
                 console.error(`No parser available for extension: ${ext}`);
                 return '[]';
             }
 
             this.parser.setLanguage(parser);
+            console.log('Parser set for extension:', ext);
+
             const tree = this.parser.parse(content);
+            console.log('AST Root node type:', tree.rootNode.type);
+            console.log('AST Root node child count:', tree.rootNode.children.length);
 
             // 第一遍遍历收集所有函数声明
             this.traverseTree(tree.rootNode);
+
+            // Debug: 打印收集到的信息
+            console.log('\nCollected information:');
+            console.log('Functions:', Array.from(this.functions.entries()));
+            console.log('Relations:', Array.from(this.relations.entries()));
+            console.log('Imports:', Array.from(this.imports.entries()));
 
             // 结果格式化
             const results = Array.from(this.relations.entries()).map(([key, location]) => {
@@ -186,6 +208,7 @@ class TreeSitterParser {
                 ];
             });
 
+            console.log('\nFormatted results:', results);
             return JSON.stringify(results);
         } catch (error) {
             console.error(`Error processing ${filePath}: ${error.message}`);
