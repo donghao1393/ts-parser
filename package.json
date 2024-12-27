@@ -1,0 +1,13 @@
+{
+  "name": "code-function-parser",
+  "version": "1.0.0",
+  "description": "Function call graph generator using tree-sitter",
+  "main": "parse_functions.js",
+  "dependencies": {
+    "tree-sitter": "^0.20.6",
+    "tree-sitter-javascript": "^0.20.1",
+    "tree-sitter-python": "^0.20.4",
+    "tree-sitter-rust": "^0.20.4",
+    "tree-sitter-typescript": "^0.20.3"
+  }
+}
