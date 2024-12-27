@@ -94,30 +94,42 @@ class TreeSitterParser {
     // 处理导入语句
     processImports(node) {
         if (node.type === 'import_statement' || node.type === 'import_declaration') {
-            const defaultImport = node.children.find(child => 
-                child.type === 'identifier' || 
-                (child.type === 'import_clause' && child.children.some(c => c.type === 'identifier'))
-            );
-            
+            // 处理具名导入
             const namedImports = node.children.find(child => 
                 child.type === 'named_imports' || 
                 child.type === 'import_clause'
             );
 
+            if (namedImports) {
+                const importSpecifiers = namedImports.children.filter(child => 
+                    child.type === 'import_specifier'
+                );
+
+                importSpecifiers.forEach(specifier => {
+                    // 处理 as 语法，比如 BrowserRouter as Router
+                    const original = specifier.children.find(c => c.type === 'identifier');
+                    const alias = specifier.children.find((c, i) => 
+                        c.type === 'identifier' && i > 0
+                    );
+                    
+                    if (original) {
+                        const name = alias ? alias.text : original.text;
+                        this.imports.set(name, `import:${original.text}`);
+                    }
+                });
+            }
+
+            // 处理默认导入
+            const defaultImport = node.children.find(child => 
+                child.type === 'identifier' || 
+                (child.type === 'import_clause' && child.children[0]?.type === 'identifier')
+            );
+
             if (defaultImport) {
                 const name = defaultImport.type === 'identifier' ? 
                     defaultImport.text : 
-                    defaultImport.children.find(c => c.type === 'identifier').text;
+                    defaultImport.children[0].text;
                 this.imports.set(name, `import:${name}`);
-            }
-
-            if (namedImports) {
-                namedImports.children
-                    .filter(child => child.type === 'import_specifier')
-                    .forEach(specifier => {
-                        const name = specifier.children.find(c => c.type === 'identifier').text;
-                        this.imports.set(name, `import:${name}`);
-                    });
             }
         }
     }
@@ -185,57 +197,73 @@ class TreeSitterParser {
 
     // 处理JSX属性中的组件引用
     processJSXAttributes(element, currentScope) {
-        element.children
-            .filter(child => child.type === 'jsx_attribute')
-            .forEach(attr => {
-                const name = attr.children.find(c => c.type === 'property_identifier')?.text;
-                if (name === 'element') {  // 特别处理Route的element属性
-                    const expression = attr.children.find(c => c.type === 'jsx_expression');
-                    if (expression) {
-                        const componentRef = expression.children.find(c => 
-                            c.type === 'jsx_element' || 
-                            c.type === 'jsx_self_closing_element'
-                        );
-                        if (componentRef) {
-                            this.processJSXElement(componentRef, currentScope);
+        const attributes = element.children.filter(child => child.type === 'jsx_attribute');
+        
+        for (const attr of attributes) {
+            // 获取属性值
+            const expression = attr.children.find(child => child.type === 'jsx_expression');
+            if (!expression) continue;
+
+            // 处理元素属性（比如Route的element属性）
+            if (attr.children[0]?.text === 'element') {
+                const component = expression.children.find(child => 
+                    child.type === 'jsx_element' || 
+                    child.type === 'jsx_self_closing_element' ||
+                    child.type === 'identifier'
+                );
+
+                if (component) {
+                    if (component.type === 'identifier') {
+                        // 直接使用组件引用
+                        const name = component.text;
+                        if (this.imports.has(name)) {
+                            this.addRelation(
+                                currentScope,
+                                name,
+                                `${component.startPosition.row + 1}:${component.startPosition.column}`
+                            );
                         }
+                    } else {
+                        // JSX形式的组件使用
+                        this.processJSXElement(component, currentScope);
                     }
                 }
-            });
+            }
+        }
     }
 
     // 处理JSX元素
     processJSXElement(node, currentScope) {
-        const elements = [];
-        
         // 处理开标签或自闭合标签
-        const openingElement = node.children.find(child => 
+        const rootElement = node.children.find(child => 
             child.type === 'jsx_opening_element' || 
             child.type === 'jsx_self_closing_element'
         );
         
-        if (openingElement) {
-            // 识别JSX组件
-            const tagIdentifier = openingElement.children.find(child => child.type === 'identifier');
+        if (rootElement) {
+            // 识别组件名
+            const tagIdentifier = rootElement.children.find(child => child.type === 'identifier');
             if (tagIdentifier && /^[A-Z]/.test(tagIdentifier.text)) {
                 const componentName = tagIdentifier.text;
-                if (this.imports.has(componentName) || this.functions.has(componentName)) {
+                if (this.imports.has(componentName)) {
                     this.addRelation(
                         currentScope,
                         componentName,
-                        `${openingElement.startPosition.row + 1}:${openingElement.startPosition.column}`
+                        `${rootElement.startPosition.row + 1}:${rootElement.startPosition.column}`
                     );
                 }
-                
-                // 处理属性中的组件引用
-                this.processJSXAttributes(openingElement, currentScope);
+
+                // 处理组件的属性
+                this.processJSXAttributes(rootElement, currentScope);
             }
         }
 
-        // 递归处理子JSX元素
-        node.children
-            .filter(child => child.type === 'jsx_element' || child.type === 'jsx_self_closing_element')
-            .forEach(child => this.processJSXElement(child, currentScope));
+        // 递归处理所有子JSX元素
+        for (const child of node.children) {
+            if (child.type === 'jsx_element' || child.type === 'jsx_self_closing_element') {
+                this.processJSXElement(child, currentScope);
+            }
+        }
     }
 
     // 遍历语法树
